@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Attendance - Test Photo Upload</title>
+
+    <!-- Bootstrap CSS -->
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+        crossorigin="anonymous"
+    />
+
+    <style>
+        body {
+            background-color: #f5f7fb;
+        }
+
+        .upload-card {
+            max-width: 900px;
+            margin: 40px auto;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        #imagePreviewWrapper {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+        }
+
+        #imagePreview {
+            max-width: 100%;
+            height: auto;
+            display: none;
+            border-radius: 8px;
+        }
+
+        #overlayCanvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+            display: none;
+            pointer-events: none;
+        }
+
+        #progressContainer {
+            display: none;
+        }
+
+        #results {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="upload-card bg-white p-4 p-md-5">
+            <h2 class="mb-3 text-center">Test Photo Upload &amp; Face Detection</h2>
+            <p class="text-muted text-center mb-4">
+                Select a JPG or PNG image and upload it to the backend
+                <code>/api/upload</code> endpoint to see detected faces.
+            </p>
+
+            <!-- Alerts -->
+            <div id="alertContainer"></div>
+
+            <!-- File upload form -->
+            <form id="uploadForm" enctype="multipart/form-data" class="mb-4">
+                <div class="row g-3 align-items-center">
+                    <div class="col-md-6">
+                        <label for="photoInput" class="form-label fw-semibold">Select Image (JPG / PNG)</label>
+                        <input
+                            type="file"
+                            class="form-control"
+                            id="photoInput"
+                            accept="image/png, image/jpeg"
+                            required
+                        />
+                        <div class="form-text">
+                            Maximum size: 10 MB. Recommended: group/class photo with clear faces.
+                        </div>
+                    </div>
+                    <div class="col-md-3 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary w-100" id="uploadButton">
+                            Upload &amp; Detect Faces
+                        </button>
+                    </div>
+                    <div class="col-md-3 d-flex align-items-end">
+                        <button type="button" class="btn btn-outline-secondary w-100" id="clearButton">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </form>
+
+            <!-- Progress indicator -->
+            <div id="progressContainer" class="mb-4">
+                <label class="form-label">Upload Progress</label>
+                <div class="progress">
+                    <div
+                        id="uploadProgress"
+                        class="progress-bar progress-bar-striped progress-bar-animated"
+                        role="progressbar"
+                        style="width: 0%;"
+                        aria-valuenow="0"
+                        aria-valuemin="0"
+                        aria-valuemax="100"
+                    ></div>
+                </div>
+            </div>
+
+            <div class="row g-4">
+                <!-- Image preview + overlay -->
+                <div class="col-md-6">
+                    <h5 class="mb-3">Image Preview</h5>
+                    <div id="imagePreviewWrapper" class="border bg-light p-2 rounded text-center">
+                        <img id="imagePreview" alt="Selected image preview" />
+                        <canvas id="overlayCanvas"></canvas>
+                        <p id="noImageText" class="text-muted m-2">
+                            No image selected yet.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Results display -->
+                <div class="col-md-6">
+                    <div id="results">
+                        <h5>Face Detection Results</h5>
+                        <p>
+                            Faces detected:
+                            <span id="faceCount" class="fw-bold">0</span>
+                        </p>
+                        <div class="mb-2">
+                            <button
+                                class="btn btn-sm btn-outline-secondary"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#rawJsonCollapse"
+                                aria-expanded="false"
+                                aria-controls="rawJsonCollapse"
+                            >
+                                Toggle Raw JSON
+                            </button>
+                        </div>
+                        <div class="collapse" id="rawJsonCollapse">
+                            <div class="card card-body bg-light">
+                                <pre id="jsonOutput" class="mb-0 small"></pre>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="resultsPlaceholder" class="text-muted">
+                        Upload an image to see detection results here.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS (for collapse, etc.) -->
+    <script
+        src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-QWTKzQj5LhrpOeXXkdLoi1hQix1AoLTW1df9FBV6khrm3K9Zq+c54fBvJvZQZpG0"
+        crossorigin="anonymous"
+    ></script>
+
+    <script>
+        const photoInput = document.getElementById("photoInput");
+        const uploadForm = document.getElementById("uploadForm");
+        const uploadButton = document.getElementById("uploadButton");
+        const clearButton = document.getElementById("clearButton");
+        const imagePreview = document.getElementById("imagePreview");
+        const overlayCanvas = document.getElementById("overlayCanvas");
+        const imagePreviewWrapper = document.getElementById("imagePreviewWrapper");
+        const noImageText = document.getElementById("noImageText");
+        const resultsSection = document.getElementById("results");
+        const resultsPlaceholder = document.getElementById("resultsPlaceholder");
+        const faceCountSpan = document.getElementById("faceCount");
+        const jsonOutput = document.getElementById("jsonOutput");
+        const alertContainer = document.getElementById("alertContainer");
+        const progressContainer = document.getElementById("progressContainer");
+        const progressBar = document.getElementById("uploadProgress");
+
+        let currentImage = new Image();
+
+        function showAlert(message, type = "danger") {
+            alertContainer.innerHTML = `
+                <div class="alert alert-${type} alert-dismissible fade show" role="alert">
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            `;
+        }
+
+        function clearAlert() {
+            alertContainer.innerHTML = "";
+        }
+
+        function resetResults() {
+            resultsSection.style.display = "none";
+            resultsPlaceholder.style.display = "block";
+            faceCountSpan.textContent = "0";
+            jsonOutput.textContent = "";
+        }
+
+        function resetPreview() {
+            imagePreview.src = "";
+            imagePreview.style.display = "none";
+            overlayCanvas.style.display = "none";
+            overlayCanvas.width = 0;
+            overlayCanvas.height = 0;
+            noImageText.style.display = "block";
+        }
+
+        function resetProgress() {
+            progressContainer.style.display = "none";
+            progressBar.style.width = "0%";
+            progressBar.setAttribute("aria-valuenow", "0");
+        }
+
+        // Draw bounding boxes over the image based on face data
+        function drawFaceBoxes(faces) {
+            if (!imagePreview.complete || imagePreview.naturalWidth === 0) {
+                return;
+            }
+
+            const rect = imagePreview.getBoundingClientRect();
+            const width = rect.width;
+            const height = rect.height;
+
+            overlayCanvas.width = width;
+            overlayCanvas.height = height;
+            overlayCanvas.style.display = "block";
+
+            const ctx = overlayCanvas.getContext("2d");
+            ctx.clearRect(0, 0, width, height);
+
+            // Scale from original image size to displayed size
+            const scaleX = width / imagePreview.naturalWidth;
+            const scaleY = height / imagePreview.naturalHeight;
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "#0d6efd";
+            ctx.font = "14px sans-serif";
+            ctx.fillStyle = "rgba(13, 110, 253, 0.6)";
+
+            faces.forEach((face) => {
+                const x = face.x * scaleX;
+                const y = face.y * scaleY;
+                const w = face.width * scaleX;
+                const h = face.height * scaleY;
+
+                ctx.strokeRect(x, y, w, h);
+
+                const label = `#${face.face_id}`;
+                const padding = 4;
+                ctx.fillRect(x, y - 18, ctx.measureText(label).width + padding * 2, 18);
+                ctx.fillStyle = "#ffffff";
+                ctx.fillText(label, x + padding, y - 4);
+                ctx.fillStyle = "rgba(13, 110, 253, 0.6)";
+            });
+        }
+
+        // Handle file selection and preview
+        photoInput.addEventListener("change", () => {
+            clearAlert();
+            resetResults();
+            resetProgress();
+
+            const file = photoInput.files[0];
+            if (!file) {
+                resetPreview();
+                return;
+            }
+
+            const allowedTypes = ["image/jpeg", "image/png"];
+            if (!allowedTypes.includes(file.type)) {
+                showAlert("Only JPG and PNG images are allowed.", "warning");
+                photoInput.value = "";
+                resetPreview();
+                return;
+            }
+
+            if (file.size > 10 * 1024 * 1024) {
+                showAlert("File is too large. Maximum size is 10 MB.", "warning");
+                photoInput.value = "";
+                resetPreview();
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                imagePreview.src = e.target.result;
+                imagePreview.style.display = "block";
+                noImageText.style.display = "none";
+
+                currentImage.onload = () => {
+                    drawFaceBoxes([]); // clear any previous boxes
+                };
+                currentImage.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Handle form submission
+        uploadForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            clearAlert();
+            resetResults();
+
+            const file = photoInput.files[0];
+            if (!file) {
+                showAlert("Please select an image first.", "warning");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("photo", file);
+
+            progressContainer.style.display = "block";
+            progressBar.style.width = "0%";
+            progressBar.setAttribute("aria-valuenow", "0");
+            uploadButton.disabled = true;
+
+            try {
+                // Use XMLHttpRequest to track upload progress
+                const responseData = await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open("POST", "http://localhost:5000/api/upload");
+
+                    xhr.upload.addEventListener("progress", (event) => {
+                        if (event.lengthComputable) {
+                            const percent = Math.round((event.loaded / event.total) * 100);
+                            progressBar.style.width = percent + "%";
+                            progressBar.setAttribute("aria-valuenow", String(percent));
+                        }
+                    });
+
+                    xhr.onreadystatechange = () => {
+                        if (xhr.readyState === XMLHttpRequest.DONE) {
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                                try {
+                                    resolve(JSON.parse(xhr.responseText));
+                                } catch (err) {
+                                    reject(new Error("Failed to parse server response."));
+                                }
+                            } else {
+                                try {
+                                    const errData = JSON.parse(xhr.responseText);
+                                    reject(
+                                        new Error(
+                                            errData.error ||
+                                                `Upload failed with status ${xhr.status}`
+                                        )
+                                    );
+                                } catch (err) {
+                                    reject(
+                                        new Error(
+                                            `Upload failed with status ${xhr.status}`
+                                        )
+                                    );
+                                }
+                            }
+                        }
+                    };
+
+                    xhr.onerror = () => reject(new Error("Network error during upload."));
+
+                    xhr.send(formData);
+                });
+
+                // Display results
+                resultsSection.style.display = "block";
+                resultsPlaceholder.style.display = "none";
+
+                faceCountSpan.textContent = responseData.total_faces || 0;
+                jsonOutput.textContent = JSON.stringify(responseData, null, 2);
+
+                if (Array.isArray(responseData.faces)) {
+                    drawFaceBoxes(responseData.faces);
+                }
+
+                if (responseData.success) {
+                    showAlert(
+                        `Success! Found ${responseData.total_faces || 0} face(s) in the image.`,
+                        "success"
+                    );
+                } else if (responseData.error) {
+                    showAlert(responseData.error, "warning");
+                }
+            } catch (error) {
+                console.error(error);
+                showAlert(error.message || "Upload failed.", "danger");
+            } finally {
+                uploadButton.disabled = false;
+                setTimeout(() => {
+                    progressBar.style.width = "100%";
+                    progressBar.setAttribute("aria-valuenow", "100");
+                }, 200);
+            }
+        });
+
+        // Clear button handler
+        clearButton.addEventListener("click", () => {
+            clearAlert();
+            resetResults();
+            resetPreview();
+            resetProgress();
+            photoInput.value = "";
+        });
+
+        // Re-draw boxes on window resize to keep them aligned
+        window.addEventListener("resize", () => {
+            try {
+                const data = jsonOutput.textContent
+                    ? JSON.parse(jsonOutput.textContent)
+                    : null;
+                if (data && Array.isArray(data.faces)) {
+                    drawFaceBoxes(data.faces);
+                }
+            } catch (e) {
+                // ignore JSON parse errors on resize
+            }
+        });
+    </script>
+</body>
+</html>
+

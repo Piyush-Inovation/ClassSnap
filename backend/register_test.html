@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Registration Test</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding-top: 50px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 600px;
+        }
+        .card {
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        #responseArea {
+            margin-top: 20px;
+            display: none;
+        }
+        .loader {
+            display: none;
+            width: 1.5rem;
+            height: 1.5rem;
+            vertical-align: text-bottom;
+            border: .25em solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            -webkit-animation: spinner-border .75s linear infinite;
+            animation: spinner-border .75s linear infinite;
+        }
+        @keyframes spinner-border {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0">Register Student</h4>
+            </div>
+            <div class="card-body">
+                <form id="registrationForm">
+                    <div class="mb-3">
+                        <label for="studentId" class="form-label">Student ID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="studentId" name="student_id" required placeholder="e.g. S001">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="studentName" class="form-label">Full Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="studentName" name="name" required placeholder="e.g. John Doe">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="studentClass" class="form-label">Class <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="studentClass" name="class" required placeholder="e.g. 10A">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="studentPhoto" class="form-label">Face Photo <span class="text-danger">*</span></label>
+                        <input type="file" class="form-control" id="studentPhoto" name="photo" accept="image/jpeg, image/png, image/jpg" required>
+                        <div class="form-text">Accepted formats: JPG, JPEG, PNG</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100" id="submitBtn">
+                        <span class="loader spinner-border spinner-border-sm me-2" role="status" aria-hidden="true" id="btnLoader" style="display:none;"></span>
+                        Register Student
+                    </button>
+                </form>
+
+                <div id="responseArea" class="alert" role="alert"></div>
+            </div>
+        </div>
+        
+        <div class="mt-4 text-center">
+            <a href="http://127.0.0.1:5000/api/students" target="_blank" class="btn btn-outline-secondary btn-sm">View Registered Students (JSON)</a>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        document.getElementById('registrationForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const form = this;
+            const submitBtn = document.getElementById('submitBtn');
+            const btnLoader = document.getElementById('btnLoader');
+            const responseArea = document.getElementById('responseArea');
+            const fileInput = document.getElementById('studentPhoto');
+            
+            // Basic validation
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
+
+            // File extension validation
+            const filePath = fileInput.value;
+            const allowedExtensions = /(\.jpg|\.jpeg|\.png)$/i;
+            if (!allowedExtensions.exec(filePath)) {
+                alert('Invalid file type. Please upload a JPG, JPEG, or PNG file.');
+                fileInput.value = '';
+                return;
+            }
+
+            // Prepare UI for loading
+            submitBtn.disabled = true;
+            btnLoader.style.display = 'inline-block';
+            responseArea.style.display = 'none';
+            responseArea.className = 'alert'; // Reset classes
+
+            const formData = new FormData(form);
+
+            try {
+                const response = await fetch('http://localhost:5000/api/students/register', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                responseArea.style.display = 'block';
+
+                if (response.ok) {
+                    responseArea.classList.add('alert-success');
+                    responseArea.innerHTML = `
+                        <h5 class="alert-heading">Success!</h5>
+                        <p>${data.message}</p>
+                        <hr>
+                        <small class="mb-0">Registered: ${data.student.name} (${data.student.student_id})</small>
+                    `;
+                    form.reset();
+                } else {
+                    responseArea.classList.add('alert-danger');
+                    responseArea.innerHTML = `
+                        <h5 class="alert-heading">Error</h5>
+                        <p>${data.error || 'Registration failed'}</p>
+                    `;
+                }
+            } catch (error) {
+                responseArea.style.display = 'block';
+                responseArea.classList.add('alert-danger');
+                responseArea.innerHTML = `
+                    <h5 class="alert-heading">Connection Error</h5>
+                    <p>Could not connect to the server. Is the backend running?</p>
+                    <small>${error.message}</small>
+                `;
+            } finally {
+                submitBtn.disabled = false;
+                btnLoader.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>

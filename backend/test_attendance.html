@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Attendance - Live Marking</title>
+
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-y: scroll; }
+        
+        .container {
+            padding-bottom: 50px;
+        }
+
+        .main-card {
+            max-width: 1000px;
+            margin: 30px auto;
+            border: none;
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            overflow: visible; /* Was hidden, preventing tooltips/popups */
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, #0d6efd 0%, #0043a8 100%);
+            color: white;
+            padding: 20px 30px;
+            border: none;
+        }
+
+        .upload-area {
+            border: 2px dashed #dee2e6;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            background: #fff;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+        }
+        
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #0d6efd;
+            background-color: #f8faff;
+        }
+
+        #imagePreviewWrapper {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        #imagePreview {
+            display: block;
+            max-width: 100%;
+            height: auto;
+        }
+
+        #overlayCanvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+            pointer-events: none;
+        }
+
+        .student-card {
+            background: white;
+            border-left: 5px solid #198754;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            margin-bottom: 10px;
+            transition: transform 0.2s;
+        }
+        
+        .student-card:hover {
+            transform: translateY(-2px);
+        }
+        
+        .student-card.unknown {
+            border-left-color: #dc3545;
+        }
+
+        .badge-confidence {
+            font-size: 0.8rem;
+            vertical-align: middle;
+        }
+
+        /* Loading Animation */
+        .scan-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: #0d6efd;
+            box-shadow: 0 0 10px #0d6efd;
+            animation: scan 2s linear infinite;
+            display: none;
+            z-index: 10;
+        }
+
+        @keyframes scan {
+            0% { top: 0; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        .status-icon { font-size: 1.5rem; margin-right: 10px; }
+
+        /* New Fixes */
+        .sticky-top-offset {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        }
+
+        #attendanceList {
+            max-height: 400px;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card main-card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h4 class="mb-0"><i class="bi bi-person-bounding-box me-2"></i>AI Attendance System</h4>
+            <span class="badge bg-light text-primary" id="currentDate"></span>
+        </div>
+        
+        <div class="card-body p-4">
+            
+            <!-- Upload Section -->
+            <div class="row g-4" id="uploadSection">
+                <div class="col-md-5">
+                     <div class="upload-area" id="dropZone" onclick="document.getElementById('photoInput').click()">
+                        <input type="file" id="photoInput" accept="image/*" hidden>
+                        <i class="bi bi-cloud-arrow-up display-4 text-primary mb-3"></i>
+                        <h5>Click or Drag Photo Here</h5>
+                        <p class="text-muted small">Supports JPG, PNG (Max 10MB)</p>
+                    </div>
+                </div>
+                
+                <div class="col-md-7 d-flex flex-column justify-content-center">
+                    <div class="alert alert-info border-0 bg-light">
+                        <h6 class="alert-heading fw-bold"><i class="bi bi-info-circle me-2"></i>How it works</h6>
+                        <ul class="mb-0 small ps-3">
+                            <li>Upload a class photo or selfie.</li>
+                            <li>System detects faces automatically.</li>
+                            <li>Matches with registered student database.</li>
+                            <li>Marks "Present" for verified students.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Processing / Results Section -->
+            <div id="resultSection" class="d-none mt-4">
+                
+                <!-- Status Banner (Sticky) -->
+                <div id="statusBanner" class="alert d-flex align-items-center mb-4 sticky-top-offset" role="alert">
+                    <i id="statusIcon" class="bi status-icon"></i>
+                    <div>
+                        <h5 class="alert-heading mb-1" id="statusTitle">Processing...</h5>
+                        <p class="mb-0 small" id="statusDesc">Please wait while we detect faces.</p>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <!-- Image Display -->
+                    <div class="col-lg-7 text-center mb-4">
+                        <div id="imagePreviewWrapper">
+                            <div class="scan-line" id="scanLine"></div>
+                            <img id="imagePreview" alt="Attendance Photo">
+                            <canvas id="overlayCanvas"></canvas>
+                        </div>
+                        <div class="mt-3">
+                             <button class="btn btn-outline-secondary btn-sm" onclick="resetApp()">
+                                <i class="bi bi-arrow-counterclockwise me-1"></i> Scan Another
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Attendance List -->
+                    <div class="col-lg-5">
+                        <h5 class="mb-3 border-bottom pb-2">Attendance Log</h5>
+                        <div id="attendanceList">
+                            <!-- Cards inserted via JS -->
+                        </div>
+                        
+                        <!-- JSON Toggle -->
+                        <div class="accordion mt-3" id="debugAccordion">
+                            <div class="accordion-item border-0 bg-transparent">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button collapsed bg-light rounded shadow-sm py-2" type="button" data-bs-toggle="collapse" data-bs-target="#jsonCollapse">
+                                        <small class="text-muted"><i class="bi bi-code-slash me-2"></i>Show Raw Data</small>
+                                    </button>
+                                </h2>
+                                <div id="jsonCollapse" class="accordion-collapse collapse" data-bs-parent="#debugAccordion">
+                                    <div class="accordion-body p-0 pt-2">
+                                        <pre id="jsonOutput" class="bg-dark text-light p-3 rounded small m-0" style="max-height: 200px; overflow: auto;"></pre>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    // Elements
+    const dropZone = document.getElementById('dropZone');
+    const photoInput = document.getElementById('photoInput');
+    const uploadSection = document.getElementById('uploadSection');
+    const resultSection = document.getElementById('resultSection');
+    const imgPreview = document.getElementById('imagePreview');
+    const canvas = document.getElementById('overlayCanvas');
+    const scanLine = document.getElementById('scanLine');
+    const currentDateSpan = document.getElementById('currentDate');
+    const statusBanner = document.getElementById('statusBanner');
+    const statusIcon = document.getElementById('statusIcon');
+    const statusTitle = document.getElementById('statusTitle');
+    const statusDesc = document.getElementById('statusDesc');
+    const attendanceList = document.getElementById('attendanceList');
+    const jsonOutput = document.getElementById('jsonOutput');
+
+    // Init
+    currentDateSpan.textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+    // Drag & Drop
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        handleFiles(e.dataTransfer.files);
+    });
+    photoInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+    function handleFiles(files) {
+        if (files.length > 0) {
+            processImage(files[0]);
+        }
+    }
+
+    function resetApp() {
+        uploadSection.classList.remove('d-none');
+        resultSection.classList.add('d-none');
+        photoInput.value = '';
+        attendanceList.innerHTML = '';
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function log(msg, data = null) {
+        const timestamp = new Date().toLocaleTimeString();
+        const logLine = `[${timestamp}] ${msg}\n`;
+        jsonOutput.textContent += logLine;
+        if (data) {
+            jsonOutput.textContent += JSON.stringify(data, null, 2) + "\n";
+        }
+        // Auto-scroll to bottom
+        jsonOutput.scrollTop = jsonOutput.scrollHeight;
+        console.log(msg, data);
+    }
+
+    function processImage(file) {
+        // KEEP LOGS (don't clear)
+        // jsonOutput.textContent = ""; 
+        log("--- Starting process for new file: " + file.name + " ---");
+
+        // 1. Show Preview
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            imgPreview.src = e.target.result;
+            // Wait for image to load to set canvas size
+            imgPreview.onload = () => {
+                canvas.width = imgPreview.width;
+                canvas.height = imgPreview.height;
+                log(`Image loaded. Dimensions: ${imgPreview.width}x${imgPreview.height}`);
+            };
+        };
+        reader.readAsDataURL(file);
+
+        // 2. Update UI State
+        uploadSection.classList.add('d-none');
+        resultSection.classList.remove('d-none');
+        
+        // Processing State
+        setStatus('processing');
+        scanLine.style.display = 'block';
+
+        // 3. Upload & Detect
+        const formData = new FormData();
+        formData.append('photo', file);
+
+        log("Sending request to http://127.0.0.1:5000/api/attendance/mark...");
+
+        fetch('http://127.0.0.1:5000/api/attendance/mark', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => {
+            log(`Response received. Status: ${res.status}`);
+            if (!res.ok) {
+                throw new Error(`Server returned status: ${res.status}`);
+            }
+            return res.json();
+        })
+        .then(data => {
+            log("Data received:", data);
+            scanLine.style.display = 'none';
+
+            if (data.success) {
+                // Ensure result section is visible clearly
+                resultSection.classList.remove('d-none');
+                
+                // Scroll to result section
+                resultSection.scrollIntoView({ behavior: 'smooth' });
+
+                if (data.matches && data.matches.length > 0) {
+                    const presentCount = data.attendance_summary ? data.attendance_summary.present : 0;
+                    if (presentCount > 0) {
+                        setStatus('success', `Attendance Marked!`, `${presentCount} student(s) identified and marked present.`);
+                    } else {
+                        setStatus('warning', 'Faces Detected', 'But no registered students matched.');
+                    }
+                    try {
+                        displayResults(data.matches);
+                        // Delay drawing slightly to ensure image is rendered
+                        setTimeout(() => drawBoxes(data.matches), 100);
+                    } catch (e) {
+                        log("Error displaying results: " + e.message);
+                    }
+                } else {
+                     setStatus('warning', 'No Faces Found', 'Could not detect any faces in the image.');
+                     log("Success=true but matches array is empty.");
+                }
+            } else {
+                setStatus('error', 'Error', data.message || 'Something went wrong.');
+                log("Server reported error: " + data.message);
+            }
+        })
+        .catch(err => {
+            scanLine.style.display = 'none';
+            setStatus('error', 'Connection Error', err.message);
+            log("Fetch error: " + err.message);
+            console.error(err);
+        });
+    }
+
+    function setStatus(type, title, desc) {
+        statusBanner.className = 'alert d-flex align-items-center mb-4';
+        
+        if (type === 'processing') {
+            statusBanner.classList.add('alert-primary');
+            statusIcon.className = 'bi bi-gear-wide-connected bi-spin status-icon';
+            statusTitle.textContent = 'Processing Image...';
+            statusDesc.textContent = 'Detecting faces and matching identities.';
+        } else if (type === 'success') {
+            statusBanner.classList.add('alert-success');
+            statusIcon.className = 'bi bi-check-circle-fill status-icon';
+            statusTitle.textContent = title;
+            statusDesc.textContent = desc;
+        } else if (type === 'warning') {
+            statusBanner.classList.add('alert-warning');
+            statusIcon.className = 'bi bi-exclamation-triangle-fill status-icon';
+            statusTitle.textContent = title;
+            statusDesc.textContent = desc;
+        } else if (type === 'error') {
+            statusBanner.classList.add('alert-danger');
+            statusIcon.className = 'bi bi-x-octagon-fill status-icon';
+            statusTitle.textContent = title;
+            statusDesc.textContent = desc;
+        }
+    }
+
+    function displayResults(matches) {
+        attendanceList.innerHTML = '';
+        
+        matches.forEach(match => {
+            const isPresent = match.status === 'PRESENT';
+            const confidencePct = Math.round(match.confidence * 100);
+            
+            const card = document.createElement('div');
+            card.className = `student-card p-3 ${isPresent ? '' : 'unknown'}`;
+            
+            card.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="mb-1 fw-bold">${isPresent ? match.name : 'Unknown Person'}</h6>
+                        <div class="text-muted small">
+                            ${isPresent ? `<i class="bi bi-card-id me-1"></i>ID: ${match.student_id}` : 'Not Registered'}
+                        </div>
+                    </div>
+                    <div class="text-end">
+                        <span class="badge ${isPresent ? 'bg-success' : 'bg-danger'} mb-1">${match.status}</span>
+                        <div class="badge-confidence text-muted">
+                            ${confidencePct}% Match
+                        </div>
+                    </div>
+                </div>
+            `;
+            attendanceList.appendChild(card);
+        });
+    }
+
+    function drawBoxes(matches) {
+        if (!imgPreview.complete || imgPreview.naturalWidth === 0) return;
+
+        canvas.width = imgPreview.width;
+        canvas.height = imgPreview.height;
+        const ctx = canvas.getContext('2d');
+        const scaleX = imgPreview.width / imgPreview.naturalWidth;
+        const scaleY = imgPreview.height / imgPreview.naturalHeight;
+
+        log("Drawing boxes for " + matches.length + " matches...");
+
+        matches.forEach(match => {
+            // Support both box (from my app.py) and facial_area (raw deepface) just in case
+            const box = match.box || match.facial_area;
+            
+            if (!box) {
+                log("Warning: No box coordinates found for match ID " + match.face_id, match);
+                return;
+            }
+
+            // Handle various key names for robustness
+            // DeepFace usually uses x, y, w, h
+            const x = box.x !== undefined ? box.x : (box.left || 0);
+            const y = box.y !== undefined ? box.y : (box.top || 0);
+            const w = box.w !== undefined ? box.w : (box.width || 0);
+            const h = box.h !== undefined ? box.h : (box.height || 0);
+
+            const rectX = x * scaleX;
+            const rectY = y * scaleY;
+            const rectW = w * scaleX;
+            const rectH = h * scaleY;
+            
+            log(`Drawing box: [${x}, ${y}, ${w}, ${h}] -> Scaled: [${Math.round(rectX)}, ${Math.round(rectY)}, ${Math.round(rectW)}, ${Math.round(rectH)}]`);
+
+            const color = match.status === 'PRESENT' ? '#198754' : '#dc3545';
+
+            // Draw Box
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 4;
+            ctx.strokeRect(rectX, rectY, rectW, rectH);
+
+            // Draw Label
+            ctx.fillStyle = color;
+            const text = match.status === 'PRESENT' ? match.name : 'Unknown';
+            const fontSize = 16;
+            ctx.font = `bold ${fontSize}px sans-serif`;
+            const textWidth = ctx.measureText(text).width;
+            
+            ctx.fillRect(rectX, rectY - fontSize - 10, textWidth + 10, fontSize + 10);
+            ctx.fillStyle = 'white';
+            ctx.fillText(text, rectX + 5, rectY - 5);
+        });
+    }
+    
+    // Resize handling
+    window.addEventListener('resize', () => {
+        // Redrawing context if needed in future, essentially clearing for now
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    });
+</script>
+
+</body>
+</html>
