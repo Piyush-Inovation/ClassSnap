@@ -53,6 +53,53 @@ def init_db():
     except sqlite3.OperationalError:
         # Column likely already exists
         pass
+
+    # ---------------------------
+    # TASK 8: AUTHENTICATION SCHEMA
+    # ---------------------------
     
+    # Create teachers table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teachers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        name TEXT NOT NULL,
+        email TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # Add created_by to students
+    try:
+        cursor.execute("ALTER TABLE students ADD COLUMN created_by INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    # Add teacher_id to attendance
+    try:
+        cursor.execute("ALTER TABLE attendance ADD COLUMN teacher_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    
+    # Seed default admin user if not exists
+    cursor.execute("SELECT id FROM teachers WHERE username = 'admin'")
+    if not cursor.fetchone():
+        # We need bcrypt here. If it's not installed yet, this might fail unless we permit it to fail gently
+        # or assume it's run after pip install.
+        try:
+            import bcrypt
+            password = "password123"
+            # Encode password to bytes, hash, then decode back to string for storage
+            hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            
+            cursor.execute("""
+            INSERT INTO teachers (username, password_hash, name, email)
+            VALUES (?, ?, ?, ?)
+            """, ('admin', hashed, 'System Administrator', 'admin@school.com'))
+            print("Default admin user created (admin/password123)")
+        except ImportError:
+            print("Warning: bcrypt not installed. Skipping admin user creation.")
+
     conn.commit()
     conn.close()

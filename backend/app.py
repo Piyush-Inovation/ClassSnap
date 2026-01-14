@@ -9,17 +9,21 @@ registers basic routes, and sets up error handlers.
 import os
 import json
 import sqlite3
-from datetime import datetime
+import io
+from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request
+import bcrypt
+import jwt
+from flask import Flask, jsonify, request, send_file, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 from deepface import DeepFace
 
 from config import config
 from database import init_db, get_db
+from auth_middleware import token_required, generate_tokens
 
 
 def create_app() -> Flask:
@@ -67,6 +71,133 @@ def create_app() -> Flask:
         return jsonify({"status": "ok", "message": "Backend is healthy"}), 200
 
     # -----------------------------
+    # Authentication Routes
+    # -----------------------------
+
+    @app.route("/api/auth/register", methods=["POST"])
+    @token_required
+    def register_teacher():
+        """Register a new teacher (Admin only)."""
+        data = request.get_json()
+        username = data.get("username")
+        password = data.get("password")
+        name = data.get("name")
+        email = data.get("email")
+
+        if not username or not password or not name:
+            return jsonify({"error": "Username, password and name are required"}), 400
+
+        if len(password) < 8:
+            return jsonify({"error": "Password must be at least 8 characters"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        try:
+            # Check existing
+            cursor.execute("SELECT id FROM teachers WHERE username = ?", (username,))
+            if cursor.fetchone():
+                return jsonify({"error": "Username already exists"}), 400
+                
+            # Hash password
+            hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            
+            cursor.execute(
+                "INSERT INTO teachers (username, password_hash, name, email) VALUES (?, ?, ?, ?)",
+                (username, hashed, name, email)
+            )
+            conn.commit()
+            
+            return jsonify({"message": "Teacher registered successfully"}), 201
+            
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        finally:
+            conn.close()
+
+    @app.route("/api/auth/login", methods=["POST"])
+    def login():
+        """Login with username and password."""
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Missing JSON body"}), 400
+            
+        username = data.get("username")
+        password = data.get("password")
+
+        if not username or not password:
+            return jsonify({"error": "Username and password required"}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM teachers WHERE username = ?", (username,))
+        user = cursor.fetchone()
+        conn.close()
+
+        if user and bcrypt.checkpw(password.encode('utf-8'), user["password_hash"].encode('utf-8')):
+            access_token, refresh_token = generate_tokens(user["id"])
+            
+            return jsonify({
+                "success": True,
+                "message": "Login successful",
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "teacher": {
+                    "id": user["id"],
+                    "username": user["username"],
+                    "name": user["name"]
+                }
+            }), 200
+        else:
+            return jsonify({"success": False, "error": "Invalid credentials"}), 401
+
+    @app.route("/api/auth/refresh", methods=["POST"])
+    def refresh_token():
+        """Refresh access token using refresh token."""
+        data = request.get_json()
+        refresh_token = data.get("refresh_token")
+        
+        if not refresh_token:
+            return jsonify({"error": "Refresh token required"}), 400
+            
+        try:
+            # Verify refresh token
+            payload = jwt.decode(refresh_token, config.JWT_SECRET_KEY, algorithms=["HS256"])
+            if payload["type"] != "refresh":
+                raise jwt.InvalidTokenError
+                
+            user_id = payload["sub"]
+            
+            # Generate new access token
+            new_access_token, _ = generate_tokens(user_id)
+            # Use original refresh token or issue new one? Typically rotate or keep.
+            # Here we just return new access token.
+            
+            return jsonify({
+                "success": True, 
+                "access_token": new_access_token
+            }), 200
+            
+        except jwt.ExpiredSignatureError:
+            return jsonify({"error": "Refresh token expired. Please login again."}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"error": "Invalid refresh token"}), 401
+            
+    @app.route("/api/auth/me", methods=["GET"])
+    @token_required
+    def get_current_user():
+        """Get current user info."""
+        return jsonify({
+            "success": True,
+            "user": g.current_user
+        }), 200
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    def logout():
+        """Logout (stateless, so just client-side usually, but endpoint is standard)."""
+        return jsonify({"success": True, "message": "Logged out successfully"}), 200
+
+    # -----------------------------
     # Test API Endpoints
     # -----------------------------
 
@@ -84,6 +215,7 @@ def create_app() -> Flask:
         return jsonify({"students": students}), 200
 
     @app.route("/api/students/register", methods=["POST"])
+    @token_required
     def register_student():
         """
         Register a new student with face photo.
@@ -133,9 +265,10 @@ def create_app() -> Flask:
             encoding_json = json.dumps(embedding_vector)
 
             # 5. Store in Database
+            teacher_id = g.current_user["id"]
             cursor.execute(
-                "INSERT INTO students (student_id, name, class_name, face_photo_path) VALUES (?, ?, ?, ?)",
-                (student_id, name, class_name, save_path)
+                "INSERT INTO students (student_id, name, class_name, face_photo_path, created_by) VALUES (?, ?, ?, ?, ?)",
+                (student_id, name, class_name, save_path, teacher_id)
             )
             
             cursor.execute(
@@ -152,7 +285,8 @@ def create_app() -> Flask:
                     "student_id": student_id,
                     "name": name,
                     "class": class_name,
-                    "photo": filename
+                    "photo": filename,
+                    "created_by": teacher_id
                 }
             }), 201
 
@@ -165,6 +299,7 @@ def create_app() -> Flask:
             return jsonify({"error": f"Registration failed: {str(e)}"}), 500
 
     @app.route("/api/students/<int:id>", methods=["DELETE"])
+    @token_required
     def delete_student(id):
         """
         Remove student by ID.
@@ -280,6 +415,7 @@ def create_app() -> Flask:
     # -----------------------------
 
     @app.route("/api/attendance/mark", methods=["POST"])
+    @token_required
     def mark_attendance():
         """
         Mark attendance from a class photo.
@@ -381,9 +517,10 @@ def create_app() -> Flask:
                     ).fetchone()
                     
                     if not check_dup:
+                        teacher_id = g.current_user["id"]
                         cursor.execute(
-                            "INSERT INTO attendance (student_id, date, status, confidence) VALUES (?, ?, ?, ?)",
-                            (best_match["student_id"], today, status, confidence_val)
+                            "INSERT INTO attendance (student_id, date, status, confidence, teacher_id) VALUES (?, ?, ?, ?, ?)",
+                            (best_match["student_id"], today, status, confidence_val, teacher_id)
                         )
                         conn.commit()
                     
@@ -447,9 +584,395 @@ def create_app() -> Flask:
         conn.close()
         return jsonify({"date": date_str, "records": [dict(row) for row in rows]}), 200
 
-    # -----------------------------
+    # ============================
+    # REPORTING & ANALYTICS ENDPOINTS
+    # ============================
+
+    @app.route("/api/attendance/report", methods=["GET"])
+    def get_attendance_report():
+        """
+        Get comprehensive attendance report for a date range.
+        Query params: start_date, end_date, class (optional)
+        Default: last 7 days if no dates provided
+        """
+        
+        # Parse query parameters
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        class_filter = request.args.get("class")
+        
+        # Default to last 7 days if not specified
+        if not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        if not start_date:
+            start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+        
+        try:
+            # Validate date format
+            datetime.strptime(start_date, "%Y-%m-%d")
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all students
+        if class_filter:
+            cursor.execute("SELECT id, student_id, name, class_name FROM students WHERE class_name = ? ORDER BY student_id", (class_filter,))
+        else:
+            cursor.execute("SELECT id, student_id, name, class_name FROM students ORDER BY student_id")
+        
+        all_students = cursor.fetchall()
+        total_students = len(all_students)
+        
+        if total_students == 0:
+            conn.close()
+            return jsonify({
+                "success": True,
+                "report_period": f"{start_date} to {end_date}",
+                "total_students": 0,
+                "average_attendance": 0.0,
+                "daily_summary": [],
+                "student_performance": []
+            }), 200
+        
+        # Get all dates in range
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        current = start
+        date_range = []
+        while current <= end:
+            date_range.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+        
+        # Get attendance records for the date range
+        cursor.execute("""
+            SELECT a.student_id, a.date, a.status, a.confidence
+            FROM attendance a
+            WHERE a.date >= ? AND a.date <= ?
+            ORDER BY a.date, a.student_id
+        """, (start_date, end_date))
+        
+        attendance_records = cursor.fetchall()
+        conn.close()
+        
+        # Build attendance dictionary: {date: {student_id: status}}
+        attendance_by_date = {}
+        for record in attendance_records:
+            date = record["date"]
+            student_id = record["student_id"]
+            status = record["status"]
+            
+            if date not in attendance_by_date:
+                attendance_by_date[date] = {}
+            attendance_by_date[date][student_id] = status
+        
+        # Calculate daily summary
+        daily_summary = []
+        for date in date_range:
+            present = 0
+            absent = 0
+            unknown = 0
+            
+            for student in all_students:
+                student_id = student["student_id"]
+                if date in attendance_by_date and student_id in attendance_by_date[date]:
+                    status = attendance_by_date[date][student_id]
+                    if status == "PRESENT":
+                        present += 1
+                    elif status == "ABSENT":
+                        absent += 1
+                    else:
+                        unknown += 1
+                else:
+                    # No record = absent
+                    absent += 1
+            
+            percentage = (present / total_students * 100) if total_students > 0 else 0
+            daily_summary.append({
+                "date": date,
+                "present": present,
+                "absent": absent,
+                "percentage": round(percentage, 1),
+                "unknown_faces": unknown
+            })
+        
+        # Calculate student performance
+        student_performance = []
+        for student in all_students:
+            student_id = student["student_id"]
+            name = student["name"]
+            present_days = 0
+            absent_days = 0
+            last_attended = None
+            
+            for date in date_range:
+                if date in attendance_by_date and student_id in attendance_by_date[date]:
+                    if attendance_by_date[date][student_id] == "PRESENT":
+                        present_days += 1
+                        last_attended = date
+                    else:
+                        absent_days += 1
+                else:
+                    absent_days += 1
+            
+            total_days = present_days + absent_days
+            attendance_percentage = (present_days / total_days * 100) if total_days > 0 else 0
+            
+            student_performance.append({
+                "student_id": student_id,
+                "name": name,
+                "present_days": present_days,
+                "absent_days": absent_days,
+                "attendance_percentage": round(attendance_percentage, 1),
+                "last_attended": last_attended
+            })
+        
+        # Calculate overall average
+        total_present = sum(s["present_days"] for s in student_performance)
+        total_days_all = sum(s["present_days"] + s["absent_days"] for s in student_performance)
+        average_attendance = (total_present / total_days_all * 100) if total_days_all > 0 else 0
+        
+        return jsonify({
+            "success": True,
+            "report_period": f"{start_date} to {end_date}",
+            "total_students": total_students,
+            "average_attendance": round(average_attendance, 1),
+            "daily_summary": daily_summary,
+            "student_performance": student_performance
+        }), 200
+
+    @app.route("/api/attendance/student/<student_id>", methods=["GET"])
+    def get_student_attendance(student_id):
+        """
+        Get complete attendance history for a specific student.
+        Includes overall percentage, trend, and confidence scores.
+        """
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get student details
+        cursor.execute("SELECT id, student_id, name, class_name FROM students WHERE student_id = ?", (student_id,))
+        student = cursor.fetchone()
+        
+        if not student:
+            conn.close()
+            return jsonify({"error": f"Student {student_id} not found"}), 404
+        
+        # Get attendance history
+        cursor.execute("""
+            SELECT date, status, confidence, timestamp
+            FROM attendance
+            WHERE student_id = ?
+            ORDER BY date DESC, timestamp DESC
+        """, (student_id,))
+        
+        records = cursor.fetchall()
+        conn.close()
+        
+        # Build attendance history
+        attendance_history = []
+        for record in records:
+            attendance_history.append({
+                "date": record["date"],
+                "status": record["status"],
+                "confidence": record["confidence"] if record["confidence"] is not None else 0.0,
+                "timestamp": record["timestamp"]
+            })
+        
+        # Calculate statistics
+        present_count = len([r for r in attendance_history if r["status"] == "PRESENT"])
+        absent_count = len([r for r in attendance_history if r["status"] == "ABSENT"])
+        total_days = present_count + absent_count
+        attendance_percentage = (present_count / total_days * 100) if total_days > 0 else 0
+        
+        return jsonify({
+            "success": True,
+            "student_id": student["student_id"],
+            "name": student["name"],
+            "class": student["class_name"],
+            "attendance_percentage": round(attendance_percentage, 1),
+            "total_days": total_days,
+            "present_days": present_count,
+            "absent_days": absent_count,
+            "attendance_history": attendance_history
+        }), 200
+
+    @app.route("/api/dashboard/stats", methods=["GET"])
+    def get_dashboard_stats():
+        """
+        Get system-wide statistics for dashboard.
+        Includes total students, today's attendance, weekly average, etc.
+        """
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get total students
+        cursor.execute("SELECT COUNT(*) as count FROM students")
+        total_students = cursor.fetchone()["count"]
+        
+        # Get today's attendance
+        today = datetime.now().strftime("%Y-%m-%d")
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM attendance
+            WHERE date = ? AND status = 'PRESENT'
+        """, (today,))
+        today_present = cursor.fetchone()["count"]
+        today_percentage = (today_present / total_students * 100) if total_students > 0 else 0
+        
+        # Get this week's attendance (last 7 days)
+        week_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        cursor.execute("""
+            SELECT COUNT(*) as present_count
+            FROM attendance
+            WHERE date >= ? AND status = 'PRESENT'
+        """, (week_start,))
+        week_present = cursor.fetchone()["present_count"]
+        
+        cursor.execute("""
+            SELECT COUNT(DISTINCT date) as working_days
+            FROM attendance
+            WHERE date >= ?
+        """, (week_start,))
+        week_days = cursor.fetchone()["working_days"]
+        
+        # Calculate week average
+        if week_days > 0:
+            # Average students present per day
+            avg_per_day = week_present / week_days
+            week_average = (avg_per_day / total_students * 100) if total_students > 0 else 0
+        else:
+            week_average = 0
+        
+        # Get most present student
+        cursor.execute("""
+            SELECT student_id, COUNT(*) as count
+            FROM attendance
+            WHERE status = 'PRESENT'
+            GROUP BY student_id
+            ORDER BY count DESC
+            LIMIT 1
+        """)
+        most_present_record = cursor.fetchone()
+        if most_present_record:
+            cursor.execute("SELECT name FROM students WHERE student_id = ?", (most_present_record["student_id"],))
+            most_present_student = cursor.fetchone()
+            most_present = f"{most_present_student['name']} ({most_present_record['student_id']})"
+        else:
+            most_present = "N/A"
+        
+        # Get least present student (most absent)
+        cursor.execute("""
+            SELECT s.student_id, s.name, COUNT(a.id) as present_count
+            FROM students s
+            LEFT JOIN attendance a ON s.student_id = a.student_id AND a.status = 'PRESENT'
+            GROUP BY s.student_id, s.name
+            ORDER BY present_count ASC
+            LIMIT 1
+        """)
+        least_present_record = cursor.fetchone()
+        least_present = f"{least_present_record['name']} ({least_present_record['student_id']})" if least_present_record else "N/A"
+        
+        # Get total attendance records
+        cursor.execute("SELECT COUNT(*) as count FROM attendance")
+        total_attendance = cursor.fetchone()["count"]
+        
+        # Get recognition accuracy (confidence > 0.9)
+        cursor.execute("""
+            SELECT COUNT(*) as high_confidence
+            FROM attendance
+            WHERE confidence > 0.9
+        """)
+        high_confidence_count = cursor.fetchone()["high_confidence"]
+        recognition_accuracy = (high_confidence_count / total_attendance * 100) if total_attendance > 0 else 0
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "total_students": total_students,
+            "today_attendance_percentage": round(today_percentage, 1),
+            "this_week_average": round(week_average, 1),
+            "most_present_student": most_present,
+            "least_present_student": least_present,
+            "total_attendance_marked": total_attendance,
+            "recognition_accuracy": round(recognition_accuracy, 1)
+        }), 200
+
+    @app.route("/api/attendance/export/csv", methods=["GET"])
+    @token_required
+    def export_attendance_csv():
+        """
+        Export attendance records as CSV for download.
+        Query params: start_date, end_date (optional)
+        CSV columns: Date, Student ID, Name, Status, Confidence, Timestamp
+        """
+        
+        # Parse query parameters
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        
+        # Default to last 30 days if not specified
+        if not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        if not start_date:
+            start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
+        
+        try:
+            # Validate date format
+            datetime.strptime(start_date, "%Y-%m-%d")
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get attendance records
+        cursor.execute("""
+            SELECT a.date, a.student_id, s.name, a.status, a.confidence, a.timestamp
+            FROM attendance a
+            JOIN students s ON a.student_id = s.student_id
+            WHERE a.date >= ? AND a.date <= ?
+            ORDER BY a.date DESC, a.timestamp DESC
+        """, (start_date, end_date))
+        
+        records = cursor.fetchall()
+        conn.close()
+        
+        # Create CSV content
+        csv_content = "Date,Student ID,Name,Status,Confidence,Timestamp\n"
+        
+        for record in records:
+            date = record["date"]
+            student_id = record["student_id"]
+            name = record["name"]
+            status = record["status"]
+            confidence = f"{record['confidence']:.2f}" if record["confidence"] is not None else ""
+            timestamp = record["timestamp"]
+            
+            # Escape quotes in name
+            name_escaped = name.replace('"', '""')
+            csv_content += f'{date},"{student_id}","{name_escaped}",{status},{confidence},"{timestamp}"\n'
+        
+        # Create file-like object
+        csv_bytes = io.BytesIO(csv_content.encode('utf-8'))
+        
+        # Generate filename with date range
+        filename = f"attendance_report_{start_date}_to_{end_date}.csv"
+        
+        return send_file(
+            csv_bytes,
+            mimetype="text/csv",
+            as_attachment=True,
+            download_name=filename
+        )
+
+    # ============================
     # Error Handlers
-    # -----------------------------
+    # ============================
 
     @app.errorhandler(404)
     def not_found(error):
